@@ -11,6 +11,10 @@ Mapping for Depthai camera modules with depth image extraction, produces local m
 
 `depthai-core` : v2.15.3
 
+**Sample**
+
+![Sample Picture](depth_image.png)
+
 ---
 ## Download Dependencies
 **NOTE for operations in 18.04**

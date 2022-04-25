@@ -57,28 +57,38 @@ namespace depthai_ros
 
     void depth_publisher_node::update_depth_timer(const ros::TimerEvent &)
     {
-        if (!device_poll())
-        {   
-            if (empty_poll_count_time > 10.0)
-            {
-                ROS_ERROR("empty_poll_count_time more than 10s");
-                _nh.shutdown();
-                std::exit(EXIT_SUCCESS);
+        if (!registered)
+        {
+            if (!device_poll())
+            {   
+                if (empty_poll_count_time > 10.0)
+                {
+                    ROS_ERROR("empty_poll_count_time more than 10s");
+                    _nh.shutdown();
+                    std::exit(EXIT_SUCCESS);
+                    return;
+                }
+                empty_poll_count_time = (ros::Time::now() - node_start_time).toSec();
                 return;
             }
-            empty_poll_count_time = (ros::Time::now() - node_start_time).toSec();
-            return;
         }
-
-        // Try connecting to device and start the pipeline
-        dai::Device device(dev_pipeline);
-
-        // Get output queue
-        auto depth_data = device.getOutputQueue("depth", 5, false);
-
+        
+        if (!init)
+        {
+            // Try connecting to device and start the pipeline
+            device = std::make_shared<dai::Device>(dev_pipeline);
+            // Get output queue
+            depth_data = device->getOutputQueue("disparity", 4, false);
+            init = true;
+        }
+        
         // Receive 'depth' frame from device
         auto img_depth = depth_data->get<dai::ImgFrame>();
         auto depth_img = img_depth->getFrame();
+
+        // double min_dist, max_dist;
+        // minMaxLoc(depth_img, &min_dist, &max_dist); // Find minimum and maximum intensities
+        // ROS_INFO("Min %lfmm Max %lfmm", min_dist, max_dist);
 
         cv_bridge::CvImage bridge_msg;
 
@@ -96,7 +106,8 @@ namespace depthai_ros
         auto device_info_vec = dai::Device::getAllAvailableDevices();
 
         for (auto &info : device_info_vec) {
-            // std::cout << "Found device with specified id : " << (info.getMxId()).c_str() << std::endl;
+            registered = true;
+            std::cout << "Found device with specified id : " << (info.getMxId()).c_str() << std::endl;
             return true;
         }
         ROS_ERROR("Failed to find device in %lfs", (ros::Time::now() - node_start_time).toSec());
@@ -143,13 +154,15 @@ namespace depthai_ros
         stereo_depth = dev_pipeline.create<dai::node::StereoDepth>();
         xout = dev_pipeline.create<dai::node::XLinkOut>();
         
-        xout->setStreamName("depth");
+        xout->setStreamName("disparity");
 
+        stereo_depth->setDefaultProfilePreset(dai::node::StereoDepth::PresetMode::HIGH_DENSITY);
         stereo_depth->initialConfig.setConfidenceThreshold(_confidence);
         stereo_depth->initialConfig.setLeftRightCheckThreshold(_lr_check_thres);
 
         stereo_depth->setLeftRightCheck(_lr_check);
         stereo_depth->setExtendedDisparity(_extended);
+        stereo_depth->setSubpixel(_subpixel);
 
         // MEDIAN_OFF
         if(_median_kernal_size == 0)
@@ -180,7 +193,7 @@ namespace depthai_ros
         // Linking
         mono_left->out.link(stereo_depth->left);
         mono_right->out.link(stereo_depth->right);
-        stereo_depth->depth.link(xout->input);
+        stereo_depth->disparity.link(xout->input);
     }
 
 

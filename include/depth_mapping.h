@@ -53,10 +53,13 @@ namespace depthai_ros
             // Class Private Variables
             std::string _mono_resolution;
             std::string _depth_map_topic;
-            int _confidence, _lr_check_thres, _median_kernal_size;
-            bool _lr_check, _extended, _subpixel;
-            double _update_interval;
 
+            int _confidence, _lr_check_thres, _median_kernal_size;
+
+            bool _lr_check, _extended, _subpixel;
+            bool init = false, registered = false;
+            
+            double _update_interval;
             double empty_poll_count_time = 0.0;
 
             ros::Time node_start_time;
@@ -71,6 +74,8 @@ namespace depthai_ros
             std::shared_ptr<dai::node::MonoCamera> mono_right;
 
             dai::Pipeline dev_pipeline;
+            std::shared_ptr<dai::Device> device;
+            std::shared_ptr<dai::DataOutputQueue> depth_data;
             std::unordered_map<std::string, CV_mat_ptr> _output_streams;
     };
 

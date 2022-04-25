@@ -1,15 +1,16 @@
 <launch>
     
     <node pkg="depthai_mapping" type="depthai_mapping_node" name="depthai_mapping_node" output="screen">
-		<param name="mono_resolution" value="720p" />
+		<param name="mono_resolution" value="800p" />
         <param name="depth_map_topic" value="/depth" />
 
-        <param name="confidence" value="230" />
-        <param name="lr_check_thres" value="230" />
+        <param name="confidence" value="170" />
+        <param name="lr_check_thres" value="250" />
         <param name="median_kernal_size" value="7" />
         
         <param name="lr_check" value="true" />
         <param name="extended" value="true" />
+	<param name="subpixel" value="false" />
 
         <param name="update_interval" value="0.1" />
     </node>
