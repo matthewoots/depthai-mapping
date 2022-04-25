@@ -48,7 +48,7 @@ namespace depthai_ros
             ros::NodeHandle _nh;
 
             ros::Timer update_depth;
-            ros::Publisher depth_image_pub;
+            ros::Publisher depth_image_pub, disparity_image_pub;
 
             // Class Private Variables
             std::string _mono_resolution;
@@ -60,7 +60,12 @@ namespace depthai_ros
             bool init = false, registered = false;
             
             double _update_interval;
+            double _max_range_clamp;
+
             double empty_poll_count_time = 0.0;
+            double image_width_in_pixels, focal_length_in_pixels;
+            double baseline;
+            double hfov;
 
             ros::Time node_start_time;
 
@@ -75,8 +80,7 @@ namespace depthai_ros
 
             dai::Pipeline dev_pipeline;
             std::shared_ptr<dai::Device> device;
-            std::shared_ptr<dai::DataOutputQueue> depth_data;
-            std::unordered_map<std::string, CV_mat_ptr> _output_streams;
+            std::shared_ptr<dai::DataOutputQueue> disparity_data;
     };
 
     class depth_mapping_node
