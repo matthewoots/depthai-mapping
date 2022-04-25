@@ -32,7 +32,8 @@ namespace depthai_ros
             double depth_lower_limit, depth_upper_limit;
             Eigen::Matrix3f intrinsics_;
 
-            void init(double ll, double ul, double sub_fact);
+            void init(double ll, double ul, 
+                double sub_fact, int mk, float sdm);
 
             void calc_pcl_pointcloud(cv::Mat depthmap);
 
@@ -49,6 +50,8 @@ namespace depthai_ros
                 pcl::PointCloud<pcl::PointXYZ>::Ptr pointcloud);
 
             double subsample_factor;
+            int mean_k; 
+            float std_dev_mul;
             
     };
 
@@ -152,6 +155,9 @@ namespace depthai_ros
             double baseline;
             double hfov, vfov;
             double _downsample;
+
+            int _mean_k;
+            double _std_dev_mul;
 
             ros::Time node_start_time;
 

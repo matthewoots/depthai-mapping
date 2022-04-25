@@ -50,6 +50,9 @@ namespace depthai_ros
 
         _nh.param<double>("downsample", _downsample, 1.0);
 
+        _nh.param<double>("std_dev_mul", _std_dev_mul, 1.0);
+        _nh.param<int>("mean_k", _mean_k, 50);
+
         _nh.param<bool>("lr_check", _lr_check, true);
         _nh.param<bool>("extended", _extended, true);
         _nh.param<bool>("subpixel", _subpixel, false);
@@ -108,7 +111,8 @@ namespace depthai_ros
             disparity_data = device->getOutputQueue("disparity", 4, false);
             
             // Start with init mapping node
-            map_node.init(_min_range_clamp, _max_range_clamp, _subsample);
+            map_node.init(_min_range_clamp, _max_range_clamp, 
+                _subsample, _mean_k, _std_dev_mul);
             map_node.intrinsics_ = intrinsics;
 
             map_timer.start();
@@ -137,7 +141,7 @@ namespace depthai_ros
         // focal_length_in_pixels = image_width_in_pixels * 0.5 / tan(HFOV * 0.5 * PI/180)        
 
         // Depth is in cm
-        auto depth_img_ori = focal_length_in_pixels * baseline / mat;
+        auto depth_img_ori = (focal_length_in_pixels / _downsample) * baseline / mat;
         // Depth in m
         depth_img_ori = depth_img_ori / 100.0;
         depth_img_ori = min(depth_img_ori, _max_range_clamp);
@@ -145,7 +149,7 @@ namespace depthai_ros
         cv::Mat depth_img;
 
         resize(depth_img_ori, depth_img, cv::Size(
-            image_width_in_pixels * _downsample, image_height_in_pixels * _downsample),
+            image_width_in_pixels, image_height_in_pixels),
             cv::INTER_NEAREST);
 
         update_depth_pair(depth_img);
@@ -230,29 +234,29 @@ namespace depthai_ros
         // 1280 x 720
         if(_mono_resolution == "720p")
         {
-            image_width_in_pixels = 1280.0;
-            image_height_in_pixels = 720.0;
+            image_width_in_pixels = 1280.0 * _downsample;
+            image_height_in_pixels = 720.0 * _downsample;
             mono_res = dai::node::MonoCamera::Properties::SensorResolution::THE_720_P; 
         }
         // 640 x 400
         else if(_mono_resolution == "400p" )
         {
-            image_width_in_pixels = 640.0;
-            image_height_in_pixels = 400.0;
+            image_width_in_pixels = 640.0 * _downsample;
+            image_height_in_pixels = 400.0 * _downsample;
             mono_res = dai::node::MonoCamera::Properties::SensorResolution::THE_400_P; 
         }
         // 1280 x 800
         else if(_mono_resolution == "800p" )
         {
-            image_width_in_pixels = 1280.0;
-            image_height_in_pixels = 800.0;
+            image_width_in_pixels = 1280.0 * _downsample;
+            image_height_in_pixels = 800.0 * _downsample;
             mono_res = dai::node::MonoCamera::Properties::SensorResolution::THE_800_P; 
         }
         // 640 x 480
         else if(_mono_resolution == "480p" )
         {
-            image_width_in_pixels = 640.0;
-            image_height_in_pixels = 480.0;
+            image_width_in_pixels = 640.0 * _downsample;
+            image_height_in_pixels = 480.0 * _downsample;
             mono_res = dai::node::MonoCamera::Properties::SensorResolution::THE_480_P; 
         }
         else{
@@ -261,7 +265,7 @@ namespace depthai_ros
         }
 
         // With xxxxP mono camera resolution where HFOV = 71.9 degrees
-        focal_length_in_pixels = image_width_in_pixels * _downsample * 0.5 / 
+        focal_length_in_pixels = image_width_in_pixels * 0.5 / 
             tan(hfov * 0.5 * M_PI / 180.0);        
 
         mono_left->setResolution(mono_res); mono_right->setResolution(mono_res);
@@ -313,12 +317,20 @@ namespace depthai_ros
         stereo_depth->disparity.link(xout->input);
 
         _min_range_clamp = focal_length_in_pixels * baseline / stereo_depth->initialConfig.getMaxDisparity();
+        _min_range_clamp = _min_range_clamp/100.0;
 
-        ROS_INFO("Horizontal resolution %lfpix", image_width_in_pixels);
+        auto focal_length_v_in_pixels = image_height_in_pixels * 0.5 / 
+            tan(vfov * 0.5 * M_PI / 180.0) ; 
+
+        ROS_INFO("Horizontal %lfpix Vertical %lfpix resolution", 
+            image_width_in_pixels / _downsample, image_height_in_pixels / _downsample);
+        ROS_INFO("[After Downsample] Horizontal %lfpix Vertical %lfpix resolution", 
+            image_width_in_pixels, image_height_in_pixels);
         ROS_INFO("Max disparity %lfpix", stereo_depth->initialConfig.getMaxDisparity());
-        ROS_INFO("Focal length horizontal %lfpix", focal_length_in_pixels);
+        ROS_INFO("[After Downsample] Focal length horizontal %lfpix vertical %lfpix", 
+            focal_length_in_pixels, focal_length_v_in_pixels);
         ROS_INFO("Baseline %lfcm, HFOV %lfdeg", baseline, hfov);
-        ROS_INFO("Min stereo distance %lfm", _min_range_clamp/100.0);
+        ROS_INFO("Min stereo distance %lfm", _min_range_clamp);
 
         // Set up intrinsics
         /**
@@ -328,11 +340,9 @@ namespace depthai_ros
             * | 0    0    1 |
          * 
          */
-        auto focal_length_v_in_pixels = image_height_in_pixels * _downsample * 0.5 / 
-            tan(vfov * 0.5 * M_PI / 180.0) ; 
 
-        intrinsics << focal_length_in_pixels, 0, image_width_in_pixels/2 * _downsample,
-                    0, focal_length_v_in_pixels, image_height_in_pixels/2 * _downsample,
+        intrinsics << focal_length_in_pixels, 0, image_width_in_pixels/2,
+                    0, focal_length_v_in_pixels, image_height_in_pixels/2,
                     0, 0, 1;
     }
 
@@ -343,11 +353,14 @@ namespace depthai_ros
      * @brief For depth_mapping_node class
      */
 
-    void depth_mapping_node::init(double ll, double ul, double sub_fact)
+    void depth_mapping_node::init(double ll, double ul, 
+        double sub_fact, int mk, float sdm)
     {
-        depth_lower_limit = ll;
-        depth_upper_limit = ul;
+        depth_lower_limit = ll * 1.5;
+        depth_upper_limit = ul / 1.5;
         subsample_factor = sub_fact;
+        std_dev_mul = sdm;
+        mean_k = mk;
     }
 
     /**
@@ -370,12 +383,12 @@ namespace depthai_ros
         // reserve memory space for optimization
         local_pc->reserve(total_points);
 
-
         // Open CV is in RDF frame
         // ROS is in FLU frame
         for (int i = 0; i < total_points; i += subsample_factor)
         {
-            if (points_3d(2, i) < (float)depth_upper_limit)
+            if (points_3d(2, i) < (float)depth_upper_limit && 
+                points_3d(2, i) > (float)depth_lower_limit )
             {
                 local_pc->push_back(pcl::PointXYZ(
                     points_3d(2, i), -points_3d(0, i), -points_3d(1, i)));
@@ -388,8 +401,13 @@ namespace depthai_ros
         local_pc->is_dense = true;
         local_pc->resize(valid_points_cnt);
 
-        int mean_k = 4; 
-        float std_dev_mul = 4.0;
+        // https://pcl.readthedocs.io/projects/tutorials/en/latest/statistical_outlier.html
+        // The number of neighbors to analyze for each point is set to 50,
+        // and the standard deviation multiplier to 1. 
+        // What this means is that all points who have a distance larger 
+        // than 1 standard deviation of the mean distance to the query point 
+        // will be marked as outliers and removed
+        
         local_pc = apply_statistical_outlier_removal_filtering(
             mean_k, std_dev_mul, local_pc);
 

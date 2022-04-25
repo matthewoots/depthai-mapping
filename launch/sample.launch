@@ -5,11 +5,11 @@
 		<param name="mono_resolution" value="800p" />
         <param name="depth_map_topic" value="/depth" />
 
-        <param name="confidence" value="200" />
-        <param name="lr_check_thres" value="250" />
+        <param name="confidence" value="150" />
+        <param name="lr_check_thres" value="140" />
         <param name="median_kernal_size" value="7" />
 
-        <param name="max_range_clamp" value="5.0" />
+        <param name="max_range_clamp" value="7.0" />
         
         <param name="lr_check" value="true" />
         <param name="extended" value="true" />
@@ -17,8 +17,11 @@
 
         <param name="update_interval" value="0.1" />
 
-        <param name="subsample" value="10" />
-        <param name="downsample" value="0.3" />
+        <param name="subsample" value="2" />
+        <param name="downsample" value="0.2" />
+
+        <param name="std_dev_mul" value="0.15" />
+        <param name="mean_k" value="90" />
     </node>
 
     
