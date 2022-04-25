@@ -44,6 +44,10 @@ namespace depthai_ros
 
             Eigen::MatrixXf convert_depthmap_to_eigen_row_matrix(cv::Mat depthmap);
 
+            pcl::PointCloud<pcl::PointXYZ>::Ptr apply_statistical_outlier_removal_filtering(
+                int mean_k_value, float std_dev_multiplier,
+                pcl::PointCloud<pcl::PointXYZ>::Ptr pointcloud);
+
             double subsample_factor;
             
     };
@@ -147,6 +151,7 @@ namespace depthai_ros
             double image_width_in_pixels, image_height_in_pixels, focal_length_in_pixels;
             double baseline;
             double hfov, vfov;
+            double _downsample;
 
             ros::Time node_start_time;
 

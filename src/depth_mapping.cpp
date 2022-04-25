@@ -6,11 +6,13 @@
 
 #include <Eigen/Dense>
 #include <opencv2/core/eigen.hpp>
+#include <opencv2/opencv.hpp>
 
 #include <pcl_ros/point_cloud.h>
 #include <pcl/point_types.h>
 #include <pcl/conversions.h>
 #include <pcl/point_cloud.h>
+#include <pcl/filters/statistical_outlier_removal.h>
 
 #include "depth_mapping.h"
 
@@ -45,6 +47,8 @@ namespace depthai_ros
 
         _nh.param<double>("max_range_clamp", _max_range_clamp, 5.0);
         _nh.param<double>("update_interval", _update_interval, 0.1);
+
+        _nh.param<double>("downsample", _downsample, 1.0);
 
         _nh.param<bool>("lr_check", _lr_check, true);
         _nh.param<bool>("extended", _extended, true);
@@ -133,10 +137,16 @@ namespace depthai_ros
         // focal_length_in_pixels = image_width_in_pixels * 0.5 / tan(HFOV * 0.5 * PI/180)        
 
         // Depth is in cm
-        auto depth_img = focal_length_in_pixels * baseline / mat;
+        auto depth_img_ori = focal_length_in_pixels * baseline / mat;
         // Depth in m
-        depth_img = depth_img / 100.0;
-        depth_img = min(depth_img, _max_range_clamp);
+        depth_img_ori = depth_img_ori / 100.0;
+        depth_img_ori = min(depth_img_ori, _max_range_clamp);
+
+        cv::Mat depth_img;
+
+        resize(depth_img_ori, depth_img, cv::Size(
+            image_width_in_pixels * _downsample, image_height_in_pixels * _downsample),
+            cv::INTER_NEAREST);
 
         update_depth_pair(depth_img);
 
@@ -251,7 +261,8 @@ namespace depthai_ros
         }
 
         // With xxxxP mono camera resolution where HFOV = 71.9 degrees
-        focal_length_in_pixels = image_width_in_pixels * 0.5 / tan(hfov * 0.5 * M_PI / 180.0);        
+        focal_length_in_pixels = image_width_in_pixels * _downsample * 0.5 / 
+            tan(hfov * 0.5 * M_PI / 180.0);        
 
         mono_left->setResolution(mono_res); mono_right->setResolution(mono_res);
         mono_left->setBoardSocket(dai::CameraBoardSocket::LEFT);
@@ -317,11 +328,11 @@ namespace depthai_ros
             * | 0    0    1 |
          * 
          */
-        auto focal_length_v_in_pixels = image_height_in_pixels * 0.5 / tan(vfov * 0.5 * M_PI / 180.0); 
+        auto focal_length_v_in_pixels = image_height_in_pixels * _downsample * 0.5 / 
+            tan(vfov * 0.5 * M_PI / 180.0) ; 
 
-        
-        intrinsics << focal_length_in_pixels, 0, image_width_in_pixels,
-                    0, focal_length_v_in_pixels, image_height_in_pixels,
+        intrinsics << focal_length_in_pixels, 0, image_width_in_pixels/2 * _downsample,
+                    0, focal_length_v_in_pixels, image_height_in_pixels/2 * _downsample,
                     0, 0, 1;
     }
 
@@ -348,9 +359,9 @@ namespace depthai_ros
         ros::Time start_pcl = ros::Time::now();
         Eigen::Matrix3Xf points_3d = inverse_project_depthmap_into_3d(depthmap);
 
-        ROS_INFO("1. Inverse_project_depthmap_into_3d succeeded");
+        ROS_INFO("4. Inverse_project_depthmap_into_3d succeeded");
         int valid_points_cnt = 0;
-        ROS_INFO("points_3d Size %d", points_3d.cols());
+        ROS_INFO("points_3d Size %lu", points_3d.cols());
         int total_points = points_3d.cols();
 
         pcl::PointCloud<pcl::PointXYZ>::Ptr empty(new pcl::PointCloud<pcl::PointXYZ>);
@@ -359,20 +370,30 @@ namespace depthai_ros
         // reserve memory space for optimization
         local_pc->reserve(total_points);
 
+
+        // Open CV is in RDF frame
+        // ROS is in FLU frame
         for (int i = 0; i < total_points; i += subsample_factor)
         {
-            // if (points_3d(2, i) >= depth_lower_limit && points_3d(2, i) < depth_upper_limit)
-            // {
-                local_pc->push_back(pcl::PointXYZ(points_3d(0, i), points_3d(1, i), points_3d(2, i)));
-            //     valid_points_cnt++;
-            // }
+            if (points_3d(2, i) < (float)depth_upper_limit)
+            {
+                local_pc->push_back(pcl::PointXYZ(
+                    points_3d(2, i), -points_3d(0, i), -points_3d(1, i)));
+                valid_points_cnt++;
+            }
         }
 
-        // local_pc->width = valid_points_cnt;
-        // local_pc->height = 1;
-        // local_pc->is_dense = true;
-        // local_pc->resize(valid_points_cnt);
-        ROS_INFO("Pointcloud Size %d", local_pc->points.size());
+        local_pc->width = valid_points_cnt;
+        local_pc->height = 1;
+        local_pc->is_dense = true;
+        local_pc->resize(valid_points_cnt);
+
+        int mean_k = 4; 
+        float std_dev_mul = 4.0;
+        local_pc = apply_statistical_outlier_removal_filtering(
+            mean_k, std_dev_mul, local_pc);
+
+        ROS_INFO("Pointcloud Size %lu", local_pc->points.size());
         ROS_INFO("5. Pointcloud completed %lf\n", (ros::Time::now() - start_pcl).toSec());
     }
 
@@ -393,27 +414,29 @@ namespace depthai_ros
             Eigen::RowVectorXf::LinSpaced(depthmap_col, 0, depthmap_col - 1).replicate(depthmap_row, 1);
         col_idx_flat_row_vec.resize(1, total_pixels);
 
-        ROS_INFO("2. Created col_idx_flat_row_vec");
+        ROS_INFO("1. Created col_idx_flat_row_vec");
 
         // creating row index vector : resulting in a row vector (1,total_pixels)
         Eigen::Matrix<float, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor> row_idx_flat_row_vec =
             Eigen::VectorXf::LinSpaced(depthmap_row, 0, depthmap_row - 1).replicate(1, depthmap_col);
         row_idx_flat_row_vec.resize(1, total_pixels);
 
-        ROS_INFO("3. Created row_idx_flat_row_vec");
+        ROS_INFO("2. Created row_idx_flat_row_vec");
 
         // creating row matrix filled with ones : resulting in a row vector (1,total_pixels)
         auto one_flat_row_vec = Eigen::MatrixXf::Ones(1, total_pixels);
 
         // getting depth value inside a 2D depth map as a row vector (1,total_pixels)
         Eigen::MatrixXf depth_flat_row_vec = convert_depthmap_to_eigen_row_matrix(depthmap);
-        ROS_INFO("4. convert_depthmap_to_eigen_row_matrix succeeded");
+        ROS_INFO("3. convert_depthmap_to_eigen_row_matrix succeeded");
 
         Eigen::Matrix3Xf points(3, total_pixels);
         points.row(0) = col_idx_flat_row_vec;
         points.row(1) = row_idx_flat_row_vec;
         points.row(2) = one_flat_row_vec;
 
+
+        // https://medium.com/the-inverse-project/opencv-spatial-ai-competition-progress-journal-part-i-ef1ad85016a1
         return intrinsics_.inverse() * points * depth_flat_row_vec.asDiagonal();
     }
 
@@ -430,6 +453,24 @@ namespace depthai_ros
         row_mtrx.resize(1, depthmap.rows * depthmap.cols);
 
         return row_mtrx;
+    }
+
+    /**
+     * @brief apply_statistical_outlier_removal_filtering
+     * From https://github.com/InverseProject/pose-landmark-graph-slam
+     */
+    pcl::PointCloud<pcl::PointXYZ>::Ptr depth_mapping_node::apply_statistical_outlier_removal_filtering(
+        int mean_k_value, float std_dev_multiplier,
+        pcl::PointCloud<pcl::PointXYZ>::Ptr pointcloud)
+    {
+        pcl::PointCloud<pcl::PointXYZ>::Ptr output(new pcl::PointCloud<pcl::PointXYZ>);
+        pcl::StatisticalOutlierRemoval<pcl::PointXYZ> sor;
+        sor.setInputCloud(pointcloud);
+        sor.setMeanK(mean_k_value);
+        sor.setStddevMulThresh(std_dev_multiplier);
+        sor.filter(*output);
+
+        return output;
     }
 
 }
