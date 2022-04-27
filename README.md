@@ -13,7 +13,8 @@ Mapping for Depthai camera modules with depth image extraction, produces local m
 
 **Sample**
 
-![Sample Picture](depth_image.png)
+|![Sample Picture1](depth_image.png) | ![Sample Picture2](depth_disparity_pcl.png) | 
+|---|---|
 
 ---
 ## Download Dependencies
@@ -30,6 +31,12 @@ set(OPENCV_SUPPORT_AVAILABLE TRUE)
 ...
 # Remove the if and else and to just run it
 if(DEPTHAI_OPENCV_SUPPORT)
+```
+
+**Step 0** We may need to add udev for the camera, run it with (issue tracker from https://github.com/luxonis/depthai/issues/518) :
+```bash
+echo 'SUBSYSTEM=="usb", ATTRS{idVendor}=="03e7", MODE="0666"' | sudo tee /etc/udev/rules.d/80-movidius.rules
+sudo udevadm control --reload-rules && sudo udevadm trigger
 ```
 
 **Step 1** Setup **Depthai-core** for c++ libraries in your local system

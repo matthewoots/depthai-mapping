@@ -6,7 +6,7 @@
         <param name="depth_map_topic" value="/depth" />
 
         <!-- DEPTHAI Config parameters -->
-        <param name="confidence" value="200" />
+        <param name="confidence" value="255" />
         <param name="lr_check_thres" value="200" />
         <param name="median_kernal_size" value="7" />
 
@@ -15,19 +15,19 @@
 	    <param name="subpixel" value="false" />
 
         <!-- local parameters -->
-        <param name="max_range_clamp" value="7.0" />
+        <param name="max_range_clamp" value="10.0" />
         <param name="update_interval" value="0.1" />
 
         <param name="subsample" value="2" />
-        <param name="downsample" value="0.2" />
+        <param name="downsample" value="0.15" />
 
         <!-- Statistical Outlier Removal Filter parameters -->
-        <param name="std_dev_mul" value="0.15" />
+        <param name="std_dev_mul" value="0.10" />
         <param name="mean_k" value="90" />
 
         <!-- WLS Disparity filter parameters -->
         <param name="lambda" value="80.0" />
-        <param name="sigma" value="15.0" />
+        <param name="sigma" value="7.5" />
     </node>
 
     

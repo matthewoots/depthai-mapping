@@ -23,8 +23,9 @@ namespace depthai_ros
     void depth_mapping_node::init(double ll, double ul, 
         double sub_fact, int mk, float sdm)
     {
-        depth_lower_limit = ll * 1.5;
-        depth_upper_limit = ul / 1.5;
+        double factor = 1.5;
+        depth_lower_limit = ll * factor;
+        depth_upper_limit = ul / factor;
         subsample_factor = sub_fact;
         std_dev_mul = sdm;
         mean_k = mk;
