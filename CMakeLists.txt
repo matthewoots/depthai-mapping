@@ -15,7 +15,7 @@ find_package(catkin
 )
 
 ## System dependencies are found with CMake's conventions
-find_package(OpenCV REQUIRED)
+find_package(OpenCV 4 REQUIRED)
 find_package(Eigen3 REQUIRED)
 
 catkin_package(
@@ -55,12 +55,14 @@ include_directories(
 
 add_executable(depthai_mapping_node
   src/node.cpp
-  src/depth_mapping.cpp
+  src/depth_publisher.cpp
+  src/mapping.cpp
 )
 
 target_link_libraries(depthai_mapping_node 
  PUBLIC 
     ${catkin_LIBRARIES}
+    ${OpenCV_LIBRARIES}
     depthai::opencv
 
 )

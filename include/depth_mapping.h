@@ -17,6 +17,7 @@
 #include <sensor_msgs/PointCloud2.h>
 #include <sensor_msgs/point_cloud_conversion.h>
 
+#include <pcl_ros/point_cloud.h>
 #include <pcl/point_types.h>
 #include <pcl/point_cloud.h>
 
@@ -64,8 +65,11 @@ namespace depthai_ros
     {
         public:
 
-            std::mutex depth_mutex;
-            std::queue<std::pair<float, cv::Mat>> depth_queue;
+            /** @brief Mutexes */
+            std::mutex depth_mutex, odom_mutex;
+
+            /** @brief Odom queue is needed to synchronize odom and pcl at timestamp */
+            std::queue<std::pair<double, Eigen::Affine3d>> odom_queue;
 
             /**
              * @param intrinsics (const Eigen::Matrix3f&) : 3x3 camera intrinsics
@@ -104,9 +108,8 @@ namespace depthai_ros
 
             bool device_poll();
 
-            void clear_depth_queue();
-
-            sensor_msgs::PointCloud2 pcl2ros_converter(pcl::PointCloud<pcl::PointXYZ>::Ptr _pc);
+            cv::Mat disparity_filter(
+                cv::Mat disparity, cv::Mat right, double lambda, double sigma);
 
             void update_depth_pair(cv::Mat depth_mat)
             {
@@ -131,40 +134,68 @@ namespace depthai_ros
                     return true;
             }
 
+            void sync_odom_depth()
+            {
+                std::lock_guard<std::mutex> d_lock(depth_mutex);
+                std::lock_guard<std::mutex> o_lock(odom_mutex);
+                while (!odom_queue.empty()) 
+                    odom_queue.pop();
+            }
+
         private:
             ros::NodeHandle _nh;
 
             ros::Timer update_depth, map_timer;
             ros::Publisher depth_image_pub, disparity_image_pub, local_pcl_pub;
 
-            // Class Private Variables
+            /** @brief Resolution types defined by DEPTHAI like 800p or 480p */
             std::string _mono_resolution;
+
+            /** @brief Topic of depth message */
             std::string _depth_map_topic;
 
+            /** 
+             * @brief DEPTHAI Parameters 
+             * @param mono_resolution (std::string): Resolution of the camera object
+             * @param depth_map_topic_ (std::string): Topic on which depth map will be broadcasted (etc /depth_map)
+             * @param confidence (int): Confidence threshold for disparity calculation (Confidence threshold value 0 to 255)
+             * @param lr_check (bool): Computes and combines disparities in both L-R and R-L directions, and combine them
+             * @param extended (bool): Disparity range increased from 95 to 190, combined from full resolution and downscaled images. Suitable for short range objects 
+             * @param subpixel (bool): Better accuracy for longer distance, fractional disparity 32-levels:
+             * 
+             */
             int _confidence, _lr_check_thres, _median_kernal_size;
-            int _subsample; 
-
             bool _lr_check, _extended, _subpixel;
-            bool init = false, registered = false;
+            double baseline;
+            double hfov, vfov;
         
             double _update_interval;
             double _max_range_clamp, _min_range_clamp;
 
+            /** @brief Poll till we timeout and close the node */
             double empty_poll_count_time = 0.0;
-            double image_width_in_pixels, image_height_in_pixels, focal_length_in_pixels;
-            double baseline;
-            double hfov, vfov;
-            double _downsample;
 
-            int _mean_k;
-            double _std_dev_mul;
+            /** @brief Calculated intrinsic parameters parameters */
+            double image_width_in_pixels, image_height_in_pixels, focal_length_in_pixels;
+
+            bool init = false, registered = false;
+
+            /** @brief Subsample skips pixels to use in pcl, downsample shrinks the cv::Mat */
+            int _subsample; double _downsample;
+
+            /** @brief Statistical Outlier Removal Filter parameters */
+            int _mean_k; double _std_dev_mul;
+
+            /** @brief WLS Disparity filter parameters */
+            double _lambda, _sigma;
 
             ros::Time node_start_time;
 
             ros::Publisher _depth_map_pub;
 
             std::shared_ptr<dai::node::StereoDepth> stereo_depth;
-            std::shared_ptr<dai::node::XLinkOut> xout;
+            std::shared_ptr<dai::node::XLinkOut> xout_disp;
+            std::shared_ptr<dai::node::XLinkOut> xout_right;
 
             // Define sources and outputs
             std::shared_ptr<dai::node::MonoCamera> mono_left;
@@ -173,7 +204,9 @@ namespace depthai_ros
             dai::Pipeline dev_pipeline;
             std::shared_ptr<dai::Device> device;
             std::shared_ptr<dai::DataOutputQueue> disparity_data;
+            std::shared_ptr<dai::DataOutputQueue> right_data;
 
             std::pair<double, cv::Mat> depth_w_stamp;
+            std::pair<double, Eigen::Affine3d> odom_tf_w_stamp;
     };
 }

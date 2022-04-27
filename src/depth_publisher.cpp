@@ -7,12 +7,13 @@
 #include <Eigen/Dense>
 #include <opencv2/core/eigen.hpp>
 #include <opencv2/opencv.hpp>
+#include "opencv2/ximgproc/disparity_filter.hpp"
 
 #include <pcl_ros/point_cloud.h>
 #include <pcl/point_types.h>
-#include <pcl/conversions.h>
 #include <pcl/point_cloud.h>
-#include <pcl/filters/statistical_outlier_removal.h>
+#include <pcl/conversions.h>
+
 
 #include "depth_mapping.h"
 
@@ -44,20 +45,21 @@ namespace depthai_ros
         _nh.param<int>("confidence", _confidence, 150);
         _nh.param<int>("lr_check_thres", _lr_check_thres, 150);
         _nh.param<int>("median_kernal_size", _median_kernal_size, 7);
+        _nh.param<int>("mean_k", _mean_k, 50);
+        _nh.param<int>("subsample", _subsample, 1);
 
         _nh.param<double>("max_range_clamp", _max_range_clamp, 5.0);
         _nh.param<double>("update_interval", _update_interval, 0.1);
-
         _nh.param<double>("downsample", _downsample, 1.0);
-
         _nh.param<double>("std_dev_mul", _std_dev_mul, 1.0);
-        _nh.param<int>("mean_k", _mean_k, 50);
-
+        _nh.param<double>("lambda", _lambda, 1.0);
+        _nh.param<double>("sigma", _sigma, 1.0);
+        
         _nh.param<bool>("lr_check", _lr_check, true);
         _nh.param<bool>("extended", _extended, true);
         _nh.param<bool>("subpixel", _subpixel, false);
 
-        _nh.param<int>("subsample", _subsample, 1);
+        
 
         depth_image_pub = _nh.advertise<sensor_msgs::Image>(
             _depth_map_topic, 3);
@@ -108,7 +110,8 @@ namespace depthai_ros
             // Try connecting to device and start the pipeline
             device = std::make_shared<dai::Device>(dev_pipeline);
             // Get output queue
-            disparity_data = device->getOutputQueue("disparity", 4, false);
+            disparity_data = device->getOutputQueue("disparity_stream", 4, false);
+            right_data = device->getOutputQueue("right_mono_stream", 4, false);
             
             // Start with init mapping node
             map_node.init(_min_range_clamp, _max_range_clamp, 
@@ -120,8 +123,12 @@ namespace depthai_ros
             init = true;
         }
         
-        // Receive 'depth' frame from device
+        // Receive 'disparity' frame from device
         auto img_disparity = disparity_data->get<dai::ImgFrame>();
+        // Receive 'right' frame from device
+        auto img_right = right_data->get<dai::ImgFrame>();
+        cv::Mat right_mat = img_right->getFrame();
+
         // Now mat is in 0 to 190 (extended) or 0 to 95
         // Format is 16UC1
         cv::Mat mat = img_disparity->getFrame();
@@ -131,17 +138,24 @@ namespace depthai_ros
         disparity_msg.header.frame_id = "";
 
         disparity_msg.image = mat;
+
+        // WLS Filtering
+        cv::Mat filtered_disp_mat;
+        double lambda = _lambda * 100.0;
+        double sigma = _sigma / 10.0;
+        filtered_disp_mat = disparity_filter(mat, right_mat, lambda, sigma);
+
         disparity_msg.encoding = sensor_msgs::image_encodings::TYPE_8UC1;
         disparity_image_pub.publish(disparity_msg.toImageMsg());
 
-        mat.convertTo(mat, CV_32FC1);        
+        filtered_disp_mat.convertTo(filtered_disp_mat, CV_32FC1);        
 
         // https://docs.luxonis.com/projects/api/en/latest/components/nodes/stereo_depth/
         // depth = focal_length_in_pixels * baseline / disparity_in_pixels
         // focal_length_in_pixels = image_width_in_pixels * 0.5 / tan(HFOV * 0.5 * PI/180)        
 
         // Depth is in cm
-        auto depth_img_ori = (focal_length_in_pixels / _downsample) * baseline / mat;
+        auto depth_img_ori = (focal_length_in_pixels / _downsample) * baseline / filtered_disp_mat;
         // Depth in m
         depth_img_ori = depth_img_ori / 100.0;
         depth_img_ori = min(depth_img_ori, _max_range_clamp);
@@ -155,7 +169,7 @@ namespace depthai_ros
         update_depth_pair(depth_img);
 
         // Add to the queue
-        // depth_queue.push(depth_w_stamp);
+        // odom_queue.push(odom_tf_w_stamp);
 
         // double min_dist, max_dist;
         // minMaxLoc(depth_img, &min_dist, &max_dist); // Find minimum and maximum intensities
@@ -180,7 +194,8 @@ namespace depthai_ros
         map_node.calc_pcl_pointcloud(get_depth_pair());
 
         sensor_msgs::PointCloud2 local_pcl_msg;
-        local_pcl_msg = pcl2ros_converter(map_node.local_pc);
+
+        pcl::toROSMsg(*map_node.local_pc, local_pcl_msg);
 
         local_pcl_msg.header.stamp = ros::Time::now();
         local_pcl_msg.header.frame_id = "/base_link";
@@ -202,23 +217,22 @@ namespace depthai_ros
         return false;
     }
 
-    void depth_publisher_node::clear_depth_queue()
-    {
-        std::lock_guard<std::mutex> d_lock(depth_mutex);
-        while (!depth_queue.empty()) 
-            depth_queue.pop();
-    }
 
-    /** 
-    * @brief Convert point cloud from ROS sensor message to 
-    * pcl point ptr
-    */
-    sensor_msgs::PointCloud2
-        depth_publisher_node::pcl2ros_converter(pcl::PointCloud<pcl::PointXYZ>::Ptr _pc)
+
+    cv::Mat depth_publisher_node::disparity_filter(
+        cv::Mat disparity, cv::Mat right, double lambda, double sigma)
     {
-        sensor_msgs::PointCloud2 ros_msg;
-        pcl::toROSMsg(*_pc, ros_msg);
-        return ros_msg;
+        cv::Ptr<cv::ximgproc::DisparityWLSFilter> wls_filter;
+        
+        wls_filter = cv::ximgproc::createDisparityWLSFilterGeneric(false);
+        wls_filter->setLambda(lambda);
+        wls_filter->setSigmaColor(sigma);
+        cv::Mat filtered;
+        // CV_WRAP virtual void filter(InputArray disparity_map_left,
+        // InputArray left_view, OutputArray filtered_disparity_map
+        wls_filter->filter(disparity, right, filtered);
+
+        return filtered;
     }
 
 
@@ -273,9 +287,11 @@ namespace depthai_ros
         mono_right->setBoardSocket(dai::CameraBoardSocket::RIGHT);
 
         stereo_depth = dev_pipeline.create<dai::node::StereoDepth>();
-        xout = dev_pipeline.create<dai::node::XLinkOut>();
+        xout_disp = dev_pipeline.create<dai::node::XLinkOut>();
+        xout_right = dev_pipeline.create<dai::node::XLinkOut>();
         
-        xout->setStreamName("disparity");
+        xout_disp->setStreamName("disparity_stream");
+        xout_right->setStreamName("right_mono_stream");
 
         stereo_depth->setDefaultProfilePreset(dai::node::StereoDepth::PresetMode::HIGH_ACCURACY);
         stereo_depth->initialConfig.setConfidenceThreshold(_confidence);
@@ -314,7 +330,8 @@ namespace depthai_ros
         // Linking
         mono_left->out.link(stereo_depth->left);
         mono_right->out.link(stereo_depth->right);
-        stereo_depth->disparity.link(xout->input);
+        stereo_depth->disparity.link(xout_disp->input);
+        stereo_depth->syncedRight.link(xout_right->input);
 
         _min_range_clamp = focal_length_in_pixels * baseline / stereo_depth->initialConfig.getMaxDisparity();
         _min_range_clamp = _min_range_clamp/100.0;
@@ -344,151 +361,6 @@ namespace depthai_ros
         intrinsics << focal_length_in_pixels, 0, image_width_in_pixels/2,
                     0, focal_length_v_in_pixels, image_height_in_pixels/2,
                     0, 0, 1;
-    }
-
-    
-
-
-    /**
-     * @brief For depth_mapping_node class
-     */
-
-    void depth_mapping_node::init(double ll, double ul, 
-        double sub_fact, int mk, float sdm)
-    {
-        depth_lower_limit = ll * 1.5;
-        depth_upper_limit = ul / 1.5;
-        subsample_factor = sub_fact;
-        std_dev_mul = sdm;
-        mean_k = mk;
-    }
-
-    /**
-     * @brief get_pcl_pointcloud
-     * From https://github.com/InverseProject/pose-landmark-graph-slam
-     */
-    void depth_mapping_node::calc_pcl_pointcloud(cv::Mat depthmap)
-    {
-        ros::Time start_pcl = ros::Time::now();
-        Eigen::Matrix3Xf points_3d = inverse_project_depthmap_into_3d(depthmap);
-
-        ROS_INFO("4. Inverse_project_depthmap_into_3d succeeded");
-        int valid_points_cnt = 0;
-        ROS_INFO("points_3d Size %lu", points_3d.cols());
-        int total_points = points_3d.cols();
-
-        pcl::PointCloud<pcl::PointXYZ>::Ptr empty(new pcl::PointCloud<pcl::PointXYZ>);
-        local_pc = empty;
-
-        // reserve memory space for optimization
-        local_pc->reserve(total_points);
-
-        // Open CV is in RDF frame
-        // ROS is in FLU frame
-        for (int i = 0; i < total_points; i += subsample_factor)
-        {
-            if (points_3d(2, i) < (float)depth_upper_limit && 
-                points_3d(2, i) > (float)depth_lower_limit )
-            {
-                local_pc->push_back(pcl::PointXYZ(
-                    points_3d(2, i), -points_3d(0, i), -points_3d(1, i)));
-                valid_points_cnt++;
-            }
-        }
-
-        local_pc->width = valid_points_cnt;
-        local_pc->height = 1;
-        local_pc->is_dense = true;
-        local_pc->resize(valid_points_cnt);
-
-        // https://pcl.readthedocs.io/projects/tutorials/en/latest/statistical_outlier.html
-        // The number of neighbors to analyze for each point is set to 50,
-        // and the standard deviation multiplier to 1. 
-        // What this means is that all points who have a distance larger 
-        // than 1 standard deviation of the mean distance to the query point 
-        // will be marked as outliers and removed
-        
-        local_pc = apply_statistical_outlier_removal_filtering(
-            mean_k, std_dev_mul, local_pc);
-
-        ROS_INFO("Pointcloud Size %lu", local_pc->points.size());
-        ROS_INFO("5. Pointcloud completed %lf\n", (ros::Time::now() - start_pcl).toSec());
-    }
-
-    /**
-     * @brief inverse_project_depthmap_into_3d
-     * From https://github.com/InverseProject/pose-landmark-graph-slam
-     */
-    Eigen::Matrix3Xf depth_mapping_node::inverse_project_depthmap_into_3d(cv::Mat depthmap)
-    {
-        // depthmap's size of column (width), row (height), and total number of pixels
-        int depthmap_col = depthmap.cols;
-        int depthmap_row = depthmap.rows;
-        ROS_INFO("cols() %d rows() %d", depthmap_col, depthmap_row);
-        int total_pixels = depthmap_col * depthmap_row;
-
-        // creating column index vector : resulting in a row vector (1,total_pixels)
-        Eigen::Matrix<float, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor> col_idx_flat_row_vec =
-            Eigen::RowVectorXf::LinSpaced(depthmap_col, 0, depthmap_col - 1).replicate(depthmap_row, 1);
-        col_idx_flat_row_vec.resize(1, total_pixels);
-
-        ROS_INFO("1. Created col_idx_flat_row_vec");
-
-        // creating row index vector : resulting in a row vector (1,total_pixels)
-        Eigen::Matrix<float, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor> row_idx_flat_row_vec =
-            Eigen::VectorXf::LinSpaced(depthmap_row, 0, depthmap_row - 1).replicate(1, depthmap_col);
-        row_idx_flat_row_vec.resize(1, total_pixels);
-
-        ROS_INFO("2. Created row_idx_flat_row_vec");
-
-        // creating row matrix filled with ones : resulting in a row vector (1,total_pixels)
-        auto one_flat_row_vec = Eigen::MatrixXf::Ones(1, total_pixels);
-
-        // getting depth value inside a 2D depth map as a row vector (1,total_pixels)
-        Eigen::MatrixXf depth_flat_row_vec = convert_depthmap_to_eigen_row_matrix(depthmap);
-        ROS_INFO("3. convert_depthmap_to_eigen_row_matrix succeeded");
-
-        Eigen::Matrix3Xf points(3, total_pixels);
-        points.row(0) = col_idx_flat_row_vec;
-        points.row(1) = row_idx_flat_row_vec;
-        points.row(2) = one_flat_row_vec;
-
-
-        // https://medium.com/the-inverse-project/opencv-spatial-ai-competition-progress-journal-part-i-ef1ad85016a1
-        return intrinsics_.inverse() * points * depth_flat_row_vec.asDiagonal();
-    }
-
-    /**
-     * @brief convert_depthmap_to_eigen_row_matrix
-     * From https://github.com/InverseProject/pose-landmark-graph-slam
-     */
-    Eigen::MatrixXf depth_mapping_node::convert_depthmap_to_eigen_row_matrix(cv::Mat depthmap)
-    {
-        Eigen::Matrix<float, Eigen::Dynamic, Eigen::Dynamic> mtrx;
-        cv::cv2eigen(depthmap, mtrx);
-        Eigen::Matrix<float, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor> row_mtrx = mtrx;
-
-        row_mtrx.resize(1, depthmap.rows * depthmap.cols);
-
-        return row_mtrx;
-    }
-
-    /**
-     * @brief apply_statistical_outlier_removal_filtering
-     * From https://github.com/InverseProject/pose-landmark-graph-slam
-     */
-    pcl::PointCloud<pcl::PointXYZ>::Ptr depth_mapping_node::apply_statistical_outlier_removal_filtering(
-        int mean_k_value, float std_dev_multiplier,
-        pcl::PointCloud<pcl::PointXYZ>::Ptr pointcloud)
-    {
-        pcl::PointCloud<pcl::PointXYZ>::Ptr output(new pcl::PointCloud<pcl::PointXYZ>);
-        pcl::StatisticalOutlierRemoval<pcl::PointXYZ> sor;
-        sor.setInputCloud(pointcloud);
-        sor.setMeanK(mean_k_value);
-        sor.setStddevMulThresh(std_dev_multiplier);
-        sor.filter(*output);
-
-        return output;
     }
 
 }
