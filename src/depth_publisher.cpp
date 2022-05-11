@@ -146,6 +146,11 @@ namespace depthai_ros
         filtered_disp_mat = disparity_filter(mat, right_mat, lambda, sigma);
 
         disparity_msg.encoding = sensor_msgs::image_encodings::TYPE_8UC1;
+        int rows = mat.rows;
+        int cols = mat.cols;
+        ROS_INFO("height %dpix width %dpix", 
+            rows, cols);
+
         disparity_image_pub.publish(disparity_msg.toImageMsg());
 
         filtered_disp_mat.convertTo(filtered_disp_mat, CV_32FC1);        
@@ -238,6 +243,11 @@ namespace depthai_ros
 
     void depth_publisher_node::setup_depth_stream()
     {
+        int decimation = 4;
+        double decimation_factor = 1.0 / (double)decimation;
+
+        _downsample = decimation_factor;
+
         mono_left = dev_pipeline.create<dai::node::MonoCamera>();
         mono_right = dev_pipeline.create<dai::node::MonoCamera>();
 
@@ -300,6 +310,40 @@ namespace depthai_ros
         stereo_depth->setLeftRightCheck(_lr_check);
         stereo_depth->setExtendedDisparity(_extended);
         stereo_depth->setSubpixel(_subpixel);
+
+        auto PostConfig = stereo_depth->initialConfig.get();
+
+        // Explanation : https://dev.intelrealsense.com/docs/depth-post-processing
+        // Deafult values : https://dev.intelrealsense.com/docs/post-processing-filters
+        PostConfig.postProcessing.speckleFilter.enable = true;
+
+        PostConfig.postProcessing.speckleFilter.speckleRange = 300;
+
+        PostConfig.postProcessing.temporalFilter.enable = true;
+        // This is default
+        // PostConfig.postProcessing.temporalFilter.persistencyMode = 
+        //     dai::RawStereoDepthConfig::PostProcessing::TemporalFilter::PersistencyMode::VALID_2_IN_LAST_4;
+        
+        // Following realsense D435i
+        PostConfig.postProcessing.temporalFilter.alpha = 0.5;
+        PostConfig.postProcessing.temporalFilter.delta = 20;
+
+        PostConfig.postProcessing.spatialFilter.enable = true;
+        // Following realsense D435i
+        PostConfig.postProcessing.spatialFilter.holeFillingRadius = 4;
+        PostConfig.postProcessing.spatialFilter.numIterations = 2;
+        PostConfig.postProcessing.spatialFilter.alpha = 0.5;
+        PostConfig.postProcessing.spatialFilter.delta = 20;
+
+        PostConfig.postProcessing.thresholdFilter.minRange = 400;
+        PostConfig.postProcessing.thresholdFilter.maxRange = 15000;
+
+        // Following realsense D435i
+        PostConfig.postProcessing.decimationFilter.decimationFactor = decimation;
+        PostConfig.postProcessing.decimationFilter.decimationMode = 
+            dai::RawStereoDepthConfig::PostProcessing::DecimationFilter::DecimationMode::NON_ZERO_MEDIAN;
+
+        stereo_depth->initialConfig.set(PostConfig);
 
         // MEDIAN_OFF
         if(_median_kernal_size == 0)
